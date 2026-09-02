@@ -1,82 +1,84 @@
+import json
+import os
 from typing import Any, Dict
 
-from .ai_provider import AIProvider
+from openai import OpenAI
 
 
-class AIEngine:
+class AIProvider:
     """
-    Central AI planning engine for AI App Builder.
+    Central OpenAI API adapter for AI App Builder.
 
-    Responsibilities:
-    - Understand the user's command.
-    - Produce a structured development plan.
-    - Identify architecture requirements.
-    - Keep the planning stage separate from code application.
+    This layer is responsible only for
+    communication with the OpenAI API.
     """
 
     def __init__(self) -> None:
-        self.ai = AIProvider()
 
-    def create_plan(
-        self,
-        command: str,
-        project_path: str,
-    ) -> Dict[str, Any]:
+        api_key = os.getenv(
+            "OPENAI_API_KEY"
+        )
 
-        if not command.strip():
-            raise ValueError(
-                "Command cannot be empty."
+        if not api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is not configured."
             )
 
-        return self.ai.generate_json(
-            """
-You are the planning engine of a
-production-safe AI App Builder.
-
-Return ONLY valid JSON.
-
-Return exactly this structure:
-
-{
-  "summary": "short description of the requested change",
-  "architecture": {
-    "application_type": "web|api|mobile|other",
-    "framework": "framework name or unknown",
-    "language": "language name or unknown",
-    "requirements": []
-  },
-  "actions": [
-    {
-      "type": "analyze|locate|plan|generate|validate|test",
-      "description": "specific action"
-    }
-  ],
-  "risk": "low|medium|high",
-  "rules": [
-    "Never rewrite the entire project.",
-    "Modify only the minimum required files.",
-    "Preserve unrelated code.",
-    "Require approval before changes are applied.",
-    "Never claim that changes have already been applied.",
-    "Never claim validation passed unless validation actually passed."
-  ]
-}
-
-Safety rules:
-
-1. Never rewrite the entire project.
-2. Never invent existing files or source code.
-3. Prefer the smallest possible change.
-4. Preserve unrelated code.
-5. Do not delete files unless explicitly requested.
-6. Do not apply changes.
-7. Do not claim changes were applied.
-8. Do not claim tests passed without actual test results.
-9. High-risk or destructive operations must be identified.
-10. The plan is advisory until user approval.
-""",
-            {
-                "command": command,
-                "project_path": project_path,
-            },
+        self.model = os.getenv(
+            "OPENAI_MODEL",
+            "gpt-5-mini",
         )
+
+        self.client = OpenAI(
+            api_key=api_key
+        )
+
+    def generate_json(
+        self,
+        system_prompt: str,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        if not system_prompt.strip():
+            raise ValueError(
+                "System prompt cannot be empty."
+            )
+
+        response = self.client.responses.create(
+            model=self.model,
+            input=[
+                {
+                    "role": "system",
+                    "content": system_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        )
+
+        text = response.output_text.strip()
+
+        if not text:
+            raise ValueError(
+                "OpenAI returned an empty response."
+            )
+
+        try:
+            result = json.loads(text)
+
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "OpenAI returned invalid JSON."
+            ) from exc
+
+        if not isinstance(result, dict):
+            raise ValueError(
+                "OpenAI response must be a JSON object."
+            )
+
+        return result
