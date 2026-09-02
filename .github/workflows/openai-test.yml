@@ -1,0 +1,32 @@
+name: Test OpenAI API
+
+on:
+  workflow_dispatch:
+
+jobs:
+  openai-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Test OpenAI API
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python - <<'PY'
+          import os
+          from openai import OpenAI
+
+          key = os.environ.get("OPENAI_API_KEY")
+
+          if not key:
+              raise SystemExit("OPENAI_API_KEY secret is missing")
+
+          client = OpenAI(api_key=key)
+
+          response = client.responses.create(
+              model="gpt-5-mini",
+              input="Reply with exactly: OPENAI_CONNECTION_OK"
+          )
+
+          print(response.output_text)
+          PY
