@@ -1,44 +1,31 @@
 from pathlib import Path
-
+import difflib
 
 class PatchEngine:
+    MAX_CHANGE_RATIO = 0.40
 
-    PROTECTED_RULES = {
-        "full_file_rewrite": False,
-        "delete_project": False,
-        "delete_unrelated_files": False,
-    }
-
-    def validate_patch(
-        self,
-        file_path: str,
-        old_content: str,
-        new_content: str,
-    ):
-
+    def validate_patch(self, file_path, old_content, new_content):
         path = Path(file_path)
-
         if not path.exists():
-            raise ValueError(
-                f"Target file does not exist: {file_path}"
-            )
+            raise ValueError(f"Target file does not exist: {file_path}")
+        if old_content == new_content:
+            raise ValueError("No change detected.")
+        if not old_content:
+            raise ValueError("Old content cannot be empty.")
 
-        if not old_content.strip():
-            raise ValueError(
-                "Old content cannot be empty."
-            )
+        diff = list(difflib.unified_diff(
+            old_content.splitlines(), new_content.splitlines(), lineterm=""
+        ))
+        baseline = max(len(old_content.splitlines()), 1)
+        changed = sum(1 for line in diff if line.startswith("+") or line.startswith("-"))
+        ratio = changed / baseline
 
-        if old_content not in new_content:
-            raise ValueError(
-                "Patch validation failed. "
-                "The original code was not preserved."
-            )
+        if ratio > self.MAX_CHANGE_RATIO:
+            raise ValueError("Patch is too broad. Use a smaller localized change.")
 
         return {
             "approved_for_review": True,
             "file": str(path),
-            "message": (
-                "Patch is limited to the specified file. "
-                "Full project rewrite is prohibited."
-            ),
+            "change_ratio": round(ratio, 4),
+            "diff": diff,
         }
