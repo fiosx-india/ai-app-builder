@@ -6,18 +6,46 @@ from .validation_engine import ValidationEngine
 
 
 class ValidationPipeline:
-    """Runs validation and tests without modifying project files."""
+    """
+    Complete validation gate.
+
+    Validation must pass before a change is considered
+    safe to deploy.
+    """
 
     def __init__(self) -> None:
+
         self.validator = ValidationEngine()
         self.tester = TestEngine()
-        self.error_intelligence = ErrorIntelligence()
+        self.error_intelligence = (
+            ErrorIntelligence()
+        )
 
-    def run(self, project_path: str) -> Dict[str, Any]:
-        validation = self.validator.validate(project_path)
-        errors = list(validation.get("errors", []))
+    def run(
+        self,
+        project_path: str,
+    ) -> Dict[str, Any]:
 
-        if not validation.get("valid", False):
+        # -----------------------------
+        # Stage 1: Static validation
+        # -----------------------------
+
+        validation = self.validator.validate(
+            project_path
+        )
+
+        errors = list(
+            validation.get(
+                "errors",
+                [],
+            )
+        )
+
+        if not validation.get(
+            "valid",
+            False,
+        ):
+
             return {
                 "valid": False,
                 "safe_to_apply": False,
@@ -26,18 +54,46 @@ class ValidationPipeline:
                 "validation": validation,
                 "tests": None,
                 "errors": errors,
-                "message": "Validation failed. No changes should be applied or deployed.",
+                "message": (
+                    "Validation failed. "
+                    "Changes must not be deployed."
+                ),
             }
 
-        tests = self.tester.run_pytest(project_path)
-        if not tests.get("passed", False):
-            errors.append(
+        # -----------------------------
+        # Stage 2: Tests
+        # -----------------------------
+
+        tests = self.tester.run_pytest(
+            project_path
+        )
+
+        if not tests.get(
+            "passed",
+            False,
+        ):
+
+            raw_error = (
+                tests.get("stderr")
+                or tests.get("stdout")
+                or "Pytest failed."
+            )
+
+            diagnostic = (
                 self.error_intelligence.analyze(
-                    tests.get("stderr") or tests.get("stdout") or "Pytest failed."
+                    raw_error
                 )
             )
 
-        passed = bool(validation.get("valid")) and bool(tests.get("passed"))
+            errors.append(
+                diagnostic
+            )
+
+        passed = (
+            validation.get("valid", False)
+            and tests.get("passed", False)
+        )
+
         return {
             "valid": passed,
             "safe_to_apply": passed,
@@ -48,7 +104,10 @@ class ValidationPipeline:
             "errors": errors,
             "message": (
                 "All validation stages passed."
-                if passed else
-                "Validation failed. Fix reported errors and run validation again."
+                if passed
+                else
+                "Validation failed. "
+                "Fix reported errors and "
+                "run validation again."
             ),
         }
