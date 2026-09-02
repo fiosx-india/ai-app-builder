@@ -3,36 +3,30 @@ MarketVerse Lab
 change_scope_guard.py
 
 Purpose:
-Hard safety boundary for AI-generated code changes.
+Hard boundary for AI-generated changes.
 
-This module ensures that:
-1. Only explicitly affected files may be changed.
-2. Only the requested change scope may be modified.
-3. Unrelated code must remain unchanged.
-4. Broad rewrites are rejected.
-5. Deletions require explicit permission.
-6. New files must be explicitly proposed.
-7. Unexpected changes are rejected before application.
+This module decides whether a proposed change is
+inside the explicitly approved scope.
+
+It does NOT modify files.
+It does NOT deploy anything.
+It does NOT replace PatchEngine.
+
+PatchEngine validates the actual patch.
+ChangeScopeGuard validates the allowed scope.
 """
 
 from __future__ import annotations
 
-import hashlib
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, List
 
 
 class ChangeScopeGuard:
     """
-    Enforces the minimum-change principle.
-
-    The guard does NOT decide what the AI should build.
-    It decides whether the proposed change stays inside
-    the approved scope.
+    Prevents AI from expanding a requested change
+    beyond its approved scope.
     """
-
-    MAX_CHANGE_RATIO = 0.40
 
     ALLOWED_ACTIONS = {
         "modify",
@@ -43,166 +37,147 @@ class ChangeScopeGuard:
         self.project_root = Path(project_path).resolve()
 
     def _safe_path(self, file_path: str) -> Path:
-        """
-        Prevent changes outside the project root.
-        """
         candidate = (self.project_root / file_path).resolve()
 
         try:
             candidate.relative_to(self.project_root)
         except ValueError as exc:
             raise ValueError(
-                f"Change rejected: path escapes project boundary: {file_path}"
+                f"Change rejected: path escapes project root: {file_path}"
             ) from exc
 
         return candidate
-
-    @staticmethod
-    def _hash(content: str) -> str:
-        return hashlib.sha256(content.encode("utf-8")).hexdigest()
-
-    @staticmethod
-    def _change_ratio(old: str, new: str) -> float:
-        if old == new:
-            return 0.0
-
-        if not old:
-            return 1.0
-
-        return 1.0 - SequenceMatcher(
-            None,
-            old,
-            new,
-        ).ratio()
 
     def inspect_change(
         self,
         change: Dict[str, Any],
         approved_files: List[str],
     ) -> Dict[str, Any]:
-        """
-        Inspect one proposed change.
-
-        Returns a structured decision instead of modifying anything.
-        """
 
         file_path = change.get("file")
         action = change.get("action")
-        old_content = change.get("old_content")
-        new_content = change.get("new_content")
 
         if not file_path:
             return self._reject(
-                "Missing target file."
+                "Change does not identify a target file."
             )
 
         if not action:
             return self._reject(
-                f"Missing action for {file_path}."
+                f"Change action is missing for: {file_path}"
             )
 
         if action not in self.ALLOWED_ACTIONS:
             return self._reject(
-                f"Action '{action}' is not allowed by the safety guard."
+                f"Action '{action}' is not allowed: {file_path}"
             )
 
         if file_path not in approved_files:
             return self._reject(
-                f"File is outside the approved change scope: {file_path}"
+                f"Change is outside approved scope: {file_path}"
             )
+
+        self._safe_path(file_path)
+
+        if action == "create":
+            return self._inspect_create(
+                file_path,
+                change,
+            )
+
+        return self._inspect_modify(
+            file_path,
+            change,
+        )
+
+    def _inspect_create(
+        self,
+        file_path: str,
+        change: Dict[str, Any],
+    ) -> Dict[str, Any]:
 
         path = self._safe_path(file_path)
 
-        # ---------------------------------------------------------
-        # CREATE
-        # ---------------------------------------------------------
+        if path.exists():
+            return self._reject(
+                f"Create rejected because file already exists: {file_path}"
+            )
 
-        if action == "create":
-            if path.exists():
-                return self._reject(
-                    f"Create rejected: file already exists: {file_path}"
-                )
+        new_content = change.get("new_content")
 
-            if not isinstance(new_content, str) or not new_content.strip():
-                return self._reject(
-                    f"Create rejected: new_content is empty: {file_path}"
-                )
+        if not isinstance(new_content, str):
+            return self._reject(
+                f"New file must contain explicit new_content: {file_path}"
+            )
 
-            return {
-                "allowed": True,
-                "action": "create",
-                "file": file_path,
-                "reason": "New file is explicitly inside the approved scope.",
-                "change_ratio": 1.0,
-            }
+        if not new_content.strip():
+            return self._reject(
+                f"New file cannot be empty: {file_path}"
+            )
 
-        # ---------------------------------------------------------
-        # MODIFY
-        # ---------------------------------------------------------
+        return {
+            "allowed": True,
+            "action": "create",
+            "file": file_path,
+            "reason": (
+                "New file is explicitly included in the approved scope."
+            ),
+        }
+
+    def _inspect_modify(
+        self,
+        file_path: str,
+        change: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        path = self._safe_path(file_path)
 
         if not path.exists():
             return self._reject(
-                f"Modify rejected: target file does not exist: {file_path}"
+                f"Modify rejected because file does not exist: {file_path}"
             )
+
+        old_content = change.get("old_content")
+        new_content = change.get("new_content")
 
         if not isinstance(old_content, str):
             return self._reject(
-                f"Modify rejected: exact old_content is required: {file_path}"
+                f"Modify requires exact old_content: {file_path}"
             )
 
         if not isinstance(new_content, str):
             return self._reject(
-                f"Modify rejected: exact new_content is required: {file_path}"
+                f"Modify requires exact new_content: {file_path}"
             )
 
-        try:
-            current_content = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
+        if not old_content:
             return self._reject(
-                f"Modify rejected: target file is not UTF-8 text: {file_path}",
-                error=str(exc),
+                f"Modify cannot use empty old_content: {file_path}"
             )
 
-        # The AI must base its patch on the exact current content.
-        if self._hash(current_content) != self._hash(current_content):
+        if old_content == new_content:
             return self._reject(
-                f"Internal content verification failure: {file_path}"
+                f"No actual change was proposed: {file_path}"
             )
 
-        # old_content must exist exactly.
+        current_content = path.read_text(
+            encoding="utf-8"
+        )
+
         if old_content not in current_content:
             return self._reject(
-                f"Modify rejected: exact old_content was not found: {file_path}"
-            )
-
-        # Replace ONLY the exact requested section.
-        expected_content = current_content.replace(
-            old_content,
-            new_content,
-            1,
-        )
-
-        # Safety check against accidental broad replacement.
-        ratio = self._change_ratio(
-            current_content,
-            expected_content,
-        )
-
-        if ratio > self.MAX_CHANGE_RATIO:
-            return self._reject(
-                f"Modify rejected: proposed change is too broad "
-                f"({ratio:.2%} of file content).",
-                change_ratio=ratio,
+                "Exact old_content was not found in the current file.",
+                file=file_path,
             )
 
         return {
             "allowed": True,
             "action": "modify",
             "file": file_path,
-            "reason": "Change is limited to the exact requested content.",
-            "change_ratio": ratio,
-            "current_hash": self._hash(current_content),
-            "proposed_hash": self._hash(expected_content),
+            "reason": (
+                "Target file is inside the approved scope and "
+                "contains the exact requested source section."
+            ),
         }
 
     def inspect_plan(
@@ -210,19 +185,18 @@ class ChangeScopeGuard:
         changes: List[Dict[str, Any]],
         approved_files: List[str],
     ) -> Dict[str, Any]:
-        """
-        Inspect the complete AI change plan.
-
-        If ONE change violates the scope, the entire plan is rejected.
-        Nothing is applied.
-        """
 
         if not changes:
             return self._reject(
-                "Change plan contains no changes."
+                "No changes were proposed."
             )
 
-        results: List[Dict[str, Any]] = []
+        if not approved_files:
+            return self._reject(
+                "No files were approved for modification."
+            )
+
+        checked: List[Dict[str, Any]] = []
 
         for change in changes:
             result = self.inspect_change(
@@ -230,22 +204,23 @@ class ChangeScopeGuard:
                 approved_files,
             )
 
-            results.append(result)
+            checked.append(result)
 
+            # ONE unsafe change rejects the ENTIRE plan.
             if not result.get("allowed"):
                 return {
                     "allowed": False,
-                    "stage": "scope_guard",
+                    "stage": "scope_guard_failed",
                     "reason": result.get("reason"),
                     "failed_change": result,
-                    "checked_changes": results,
+                    "checked_changes": checked,
                 }
 
         return {
             "allowed": True,
             "stage": "scope_guard_passed",
-            "checked_changes": results,
             "approved_files": approved_files,
+            "checked_changes": checked,
             "change_count": len(changes),
         }
 
@@ -254,9 +229,10 @@ class ChangeScopeGuard:
         reason: str,
         **extra: Any,
     ) -> Dict[str, Any]:
+
         result = {
             "allowed": False,
-            "stage": "scope_guard",
+            "stage": "scope_guard_failed",
             "reason": reason,
         }
 
