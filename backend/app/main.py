@@ -1,49 +1,80 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from .ai_engine import AIEngine
 from .approval_engine import ApprovalEngine
 from .project_manager import ProjectManager
 from .validation_pipeline import ValidationPipeline
 from .workflow_engine import WorkflowEngine
-from .transaction_manager import TransactionManager
 
 
 app = FastAPI(
     title="AI App Builder",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 
-ai_engine = AIEngine()
-approval_engine = ApprovalEngine()
-project_manager = ProjectManager()
-validation_pipeline = ValidationPipeline()
-workflow_engine = WorkflowEngine()
-transaction_manager = TransactionManager()
+# --------------------------------------------------
+# SHARED APPLICATION SERVICES
+# --------------------------------------------------
 
+# IMPORTANT:
+# There must be ONE ApprovalEngine instance.
+#
+# /api/command creates the approval through WorkflowEngine.
+# /api/approve, /api/reject, /api/approval and /api/apply
+# must therefore use that exact same instance.
+
+approval_engine = ApprovalEngine()
+
+project_manager = ProjectManager()
+
+validation_pipeline = ValidationPipeline()
+
+workflow_engine = WorkflowEngine(
+    approval_engine=approval_engine,
+)
+
+
+# --------------------------------------------------
+# REQUEST MODELS
+# --------------------------------------------------
 
 class CommandRequest(BaseModel):
+
     command: str
-    project_path: str = "./projects/default"
+
+    project_path: str = (
+        "./projects/default"
+    )
 
 
 class ApprovalRequest(BaseModel):
+
     approval_id: str
 
 
 class ApplyRequest(BaseModel):
+
     approval_id: str
 
 
+# --------------------------------------------------
+# ROOT
+# --------------------------------------------------
+
 @app.get("/")
 def root():
+
     return {
         "name": "AI App Builder",
         "status": "online",
-        "version": "0.3.0",
+        "version": "0.4.0",
     }
 
+
+# --------------------------------------------------
+# COMMAND → PLAN → APPROVAL
+# --------------------------------------------------
 
 @app.post("/api/command")
 def execute_command(
@@ -52,12 +83,10 @@ def execute_command(
 
     try:
 
-        result = workflow_engine.create_plan(
+        return workflow_engine.create_plan(
             request.command,
             request.project_path,
         )
-
-        return result
 
     except Exception as exc:
 
@@ -67,6 +96,10 @@ def execute_command(
         )
 
 
+# --------------------------------------------------
+# APPROVE
+# --------------------------------------------------
+
 @app.post("/api/approve")
 def approve(
     request: ApprovalRequest,
@@ -74,7 +107,7 @@ def approve(
 
     try:
 
-        return approval_engine.approve(
+        return workflow_engine.approve(
             request.approval_id
         )
 
@@ -85,6 +118,10 @@ def approve(
             detail=str(exc),
         )
 
+
+# --------------------------------------------------
+# REJECT
+# --------------------------------------------------
 
 @app.post("/api/reject")
 def reject(
@@ -93,7 +130,7 @@ def reject(
 
     try:
 
-        return approval_engine.reject(
+        return workflow_engine.reject(
             request.approval_id
         )
 
@@ -104,6 +141,10 @@ def reject(
             detail=str(exc),
         )
 
+
+# --------------------------------------------------
+# GET APPROVAL
+# --------------------------------------------------
 
 @app.get(
     "/api/approval/{approval_id}"
@@ -114,7 +155,7 @@ def get_approval(
 
     try:
 
-        return approval_engine.get_request(
+        return workflow_engine.get_approval(
             approval_id
         )
 
@@ -126,25 +167,9 @@ def get_approval(
         )
 
 
-@app.post("/api/validate")
-def validate_project(
-    request: CommandRequest,
-):
-
-    return validation_pipeline.run(
-        request.project_path
-    )
-
-
-@app.post("/api/project")
-def create_project(
-    request: CommandRequest,
-):
-
-    return project_manager.create_project(
-        request.project_path
-    )
-
+# --------------------------------------------------
+# APPLY APPROVED CHANGES
+# --------------------------------------------------
 
 @app.post("/api/apply")
 def apply_approved_changes(
@@ -153,55 +178,72 @@ def apply_approved_changes(
 
     try:
 
-        approval = (
-            approval_engine.get_request(
-                request.approval_id
-            )
+        # IMPORTANT:
+        # Do NOT call TransactionManager directly here.
+        #
+        # Everything must pass through WorkflowEngine
+        # so the approval/workflow state remains consistent.
+
+        return workflow_engine.apply_approved_plan(
+            request.approval_id
         )
 
-        if approval["status"] != "approved":
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Changes cannot be applied. "
-                    "Approval is required."
-                ),
-            )
+    except ValueError as exc:
 
-        plan = approval["plan"]
-
-        changes = plan.get(
-            "changes",
-            [],
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
         )
-
-        project_path = plan.get(
-            "project_path"
-        )
-
-        if not changes:
-
-            return {
-                "success": False,
-                "message": (
-                    "No executable changes "
-                    "are present in the approved plan."
-                ),
-            }
-
-        result = transaction_manager.apply(
-            project_path,
-            changes,
-        )
-
-        return result
-
-    except HTTPException:
-        raise
 
     except Exception as exc:
 
         raise HTTPException(
             status_code=500,
+            detail=str(exc),
+        )
+
+
+# --------------------------------------------------
+# VALIDATION
+# --------------------------------------------------
+
+@app.post("/api/validate")
+def validate_project(
+    request: CommandRequest,
+):
+
+    try:
+
+        return workflow_engine.validate_after_change(
+            request.project_path
+        )
+
+    except Exception as exc:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        )
+
+
+# --------------------------------------------------
+# PROJECT
+# --------------------------------------------------
+
+@app.post("/api/project")
+def create_project(
+    request: CommandRequest,
+):
+
+    try:
+
+        return project_manager.create_project(
+            request.project_path
+        )
+
+    except Exception as exc:
+
+        raise HTTPException(
+            status_code=400,
             detail=str(exc),
         )
