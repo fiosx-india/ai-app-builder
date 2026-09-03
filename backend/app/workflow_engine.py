@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from .ai_engine import AIEngine
 from .approval_engine import ApprovalEngine
@@ -34,11 +34,17 @@ class WorkflowEngine:
     ERROR
         ↓
     REPAIR PROPOSAL
+
+    ApprovalEngine is injected so the API layer and workflow
+    always use the same approval store.
     """
 
     MAX_REPAIR_ATTEMPTS = 3
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        approval_engine: Optional[ApprovalEngine] = None,
+    ) -> None:
 
         self.ai_engine = AIEngine()
         self.scanner = ProjectScanner()
@@ -46,10 +52,48 @@ class WorkflowEngine:
         self.validation = ValidationPipeline()
         self.repair_engine = RepairEngine()
         self.transaction = TransactionManager()
-        self.approval_engine = ApprovalEngine()
+
+        # IMPORTANT:
+        # main.py and WorkflowEngine must share the same instance.
+        self.approval_engine = (
+            approval_engine
+            if approval_engine is not None
+            else ApprovalEngine()
+        )
 
     # --------------------------------------------------
-    # STEP 1: Create safe plan
+    # APPROVAL API
+    # --------------------------------------------------
+
+    def approve(
+        self,
+        approval_id: str,
+    ) -> Dict[str, Any]:
+
+        return self.approval_engine.approve(
+            approval_id
+        )
+
+    def reject(
+        self,
+        approval_id: str,
+    ) -> Dict[str, Any]:
+
+        return self.approval_engine.reject(
+            approval_id
+        )
+
+    def get_approval(
+        self,
+        approval_id: str,
+    ) -> Dict[str, Any]:
+
+        return self.approval_engine.get_request(
+            approval_id
+        )
+
+    # --------------------------------------------------
+    # STEP 1: CREATE SAFE PLAN
     # --------------------------------------------------
 
     def create_plan(
@@ -93,7 +137,6 @@ class WorkflowEngine:
 
         plan["code_proposal"] = code_proposal
 
-        # Keep changes available to the apply stage.
         plan["changes"] = code_proposal.get(
             "changes",
             [],
@@ -109,6 +152,8 @@ class WorkflowEngine:
             "deployment_allowed": False,
         }
 
+        # Approval is created in the SAME ApprovalEngine
+        # instance used by the API.
         approval = (
             self.approval_engine.create_request(
                 plan
@@ -122,7 +167,7 @@ class WorkflowEngine:
         }
 
     # --------------------------------------------------
-    # STEP 2: Apply approved change
+    # STEP 2: APPLY APPROVED CHANGE
     # --------------------------------------------------
 
     def apply_approved_plan(
@@ -155,6 +200,7 @@ class WorkflowEngine:
 
         if not changes:
             return {
+                "approval_id": approval_id,
                 "success": False,
                 "stage": "patching",
                 "message": (
@@ -163,11 +209,8 @@ class WorkflowEngine:
                 ),
             }
 
-        # ----------------------------------------------
-        # Transaction manager performs:
-        # backup → patch → validation → rollback
-        # ----------------------------------------------
-
+        # TransactionManager handles the protected
+        # backup → patch → validation → rollback flow.
         result = self.transaction.apply(
             project_path,
             changes,
@@ -197,6 +240,10 @@ class WorkflowEngine:
                 "changes_applied"
             ] = False
 
+            plan["workflow"][
+                "validation_passed"
+            ] = False
+
         return {
             "approval_id": approval_id,
             "plan": plan,
@@ -204,7 +251,7 @@ class WorkflowEngine:
         }
 
     # --------------------------------------------------
-    # STEP 3: Repair failed validation
+    # STEP 3: REPAIR FAILED VALIDATION
     # --------------------------------------------------
 
     def repair(
@@ -216,6 +263,7 @@ class WorkflowEngine:
     ) -> Dict[str, Any]:
 
         if attempt >= self.MAX_REPAIR_ATTEMPTS:
+
             return {
                 "repair_allowed": False,
                 "stage": "failed",
@@ -251,6 +299,7 @@ class WorkflowEngine:
         )
 
         if not file_path:
+
             return {
                 "repair_allowed": False,
                 "stage": "failed",
@@ -261,6 +310,7 @@ class WorkflowEngine:
             }
 
         if old_content is None:
+
             return {
                 "repair_allowed": False,
                 "stage": "failed",
@@ -271,6 +321,7 @@ class WorkflowEngine:
             }
 
         if new_content is None:
+
             return {
                 "repair_allowed": False,
                 "stage": "failed",
@@ -300,7 +351,7 @@ class WorkflowEngine:
         }
 
     # --------------------------------------------------
-    # STEP 4: Re-run validation
+    # STEP 4: RE-RUN VALIDATION
     # --------------------------------------------------
 
     def validate_after_change(
@@ -319,4 +370,4 @@ class WorkflowEngine:
                 else "validation_failed"
             ),
             **result,
-            }
+        }
