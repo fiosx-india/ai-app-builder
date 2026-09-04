@@ -1,84 +1,129 @@
-import json
-import os
 from typing import Any, Dict
 
-from openai import OpenAI
+from .ai_provider import AIProvider
 
 
-class AIProvider:
+class AIEngine:
     """
-    Central OpenAI API adapter for AI App Builder.
+    AI planning engine for AI App Builder.
 
-    This layer is responsible only for
-    communication with the OpenAI API.
+    This layer is responsible for:
+    - understanding the user's command
+    - analyzing the project context
+    - creating a safe development plan
+
+    It does NOT modify files directly.
     """
 
     def __init__(self) -> None:
+        self.provider = AIProvider()
 
-        api_key = os.getenv(
-            "OPENAI_API_KEY"
-        )
-
-        if not api_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY is not configured."
-            )
-
-        self.model = os.getenv(
-            "OPENAI_MODEL",
-            "gpt-5-mini",
-        )
-
-        self.client = OpenAI(
-            api_key=api_key
-        )
-
-    def generate_json(
+    def create_plan(
         self,
-        system_prompt: str,
-        payload: Dict[str, Any],
+        command: str,
+        project_path: str,
     ) -> Dict[str, Any]:
 
-        if not system_prompt.strip():
+        if not command.strip():
             raise ValueError(
-                "System prompt cannot be empty."
+                "Command cannot be empty."
             )
 
-        response = self.client.responses.create(
-            model=self.model,
-            input=[
-                {
-                    "role": "system",
-                    "content": system_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        payload,
-                        ensure_ascii=False,
-                    ),
-                },
-            ],
+        if not project_path.strip():
+            raise ValueError(
+                "Project path cannot be empty."
+            )
+
+        system_prompt = """
+You are the planning engine of a production-safe AI App Builder.
+
+Return ONLY valid JSON.
+
+Your job is to understand the user's request and create
+a safe development plan.
+
+The response must contain:
+
+{
+  "summary": "...",
+  "architecture": {
+    "goal": "...",
+    "components": [],
+    "dependencies": []
+  },
+  "plan": [
+    {
+      "step": 1,
+      "description": "...",
+      "files": [],
+      "risk": "low|medium|high"
+    }
+  ],
+  "affected_files": [],
+  "risk": "low|medium|high",
+  "validation_steps": []
+}
+
+Rules:
+
+1. NEVER rewrite the entire project.
+2. NEVER propose deleting the whole codebase.
+3. Identify only the files and sections actually relevant
+   to the user's request.
+4. Preserve unrelated files and code.
+5. Prefer the smallest safe change.
+6. Do not invent files that are not justified by the request.
+7. Do not directly apply or claim to have applied changes.
+8. Destructive or high-risk operations must be clearly flagged.
+9. The plan must be suitable for a later approval process.
+10. Validation must be considered before any change is applied.
+11. If the request is unclear, identify the ambiguity in the plan
+    instead of making destructive assumptions.
+"""
+
+        payload = {
+            "command": command,
+            "project_path": project_path,
+        }
+
+        result = self.provider.generate_json(
+            system_prompt,
+            payload,
         )
-
-        text = response.output_text.strip()
-
-        if not text:
-            raise ValueError(
-                "OpenAI returned an empty response."
-            )
-
-        try:
-            result = json.loads(text)
-
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                "OpenAI returned invalid JSON."
-            ) from exc
 
         if not isinstance(result, dict):
             raise ValueError(
-                "OpenAI response must be a JSON object."
+                "AI plan must be a JSON object."
             )
+
+        result.setdefault(
+            "summary",
+            "",
+        )
+
+        result.setdefault(
+            "architecture",
+            {},
+        )
+
+        result.setdefault(
+            "plan",
+            [],
+        )
+
+        result.setdefault(
+            "affected_files",
+            [],
+        )
+
+        result.setdefault(
+            "risk",
+            "medium",
+        )
+
+        result.setdefault(
+            "validation_steps",
+            [],
+        )
 
         return result
