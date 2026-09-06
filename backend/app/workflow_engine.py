@@ -1,4 +1,5 @@
 from typing import Any, Dict, Optional
+from pathlib import Path
 
 from .ai_engine import AIEngine
 from .approval_engine import ApprovalEngine
@@ -11,6 +12,8 @@ from .change_analyzer import ChangeAnalyzer
 from .dependency_analyzer import DependencyAnalyzer
 from .dependency_impact_engine import DependencyImpactEngine
 from .change_scope_guard import ChangeScopeGuard
+from .risk_gate import RiskGate
+from .security_manager import SecurityManager
 
 
 class WorkflowEngine:
@@ -59,6 +62,8 @@ class WorkflowEngine:
         self.change_analyzer = ChangeAnalyzer()
         self.dependency_analyzer = DependencyAnalyzer()
         self.dependency_impact_engine = DependencyImpactEngine()
+        self.risk_gate = RiskGate()
+        self.security_manager = SecurityManager()
 
         # IMPORTANT:
         # main.py and WorkflowEngine must share the same instance.
@@ -151,11 +156,18 @@ class WorkflowEngine:
         # dependency impact without applying any change.
         change_reports = []
         dependency_reports = []
+        dependency_impact_reports = []
+        security_reports = []
+
         for change in plan["changes"]:
             file_name = change.get("file")
             action = change.get("action", "modify")
             if not file_name:
                 continue
+            security_reports.append(
+                self.security_manager.inspect_path(file_name)
+            )
+
             if action == "modify":
                 change_reports.append(
                     self.change_analyzer.analyze(
@@ -166,14 +178,36 @@ class WorkflowEngine:
                 )
                 dependency_reports.append(
                     self.dependency_analyzer.analyze_file(
-                        str(__import__("pathlib").Path(project_path) / file_name)
+                        str(Path(project_path) / file_name)
+                    )
+                )
+
+                # Dependency impact is advisory before approval.
+                # It expands validation awareness, not write scope.
+                dependency_impact_reports.append(
+                    self.dependency_impact_engine.analyze(
+                        project_path,
+                        file_name,
                     )
                 )
 
         plan["analysis"] = {
             "changes": change_reports,
             "dependencies": dependency_reports,
+            "dependency_impacts": dependency_impact_reports,
+            "security_paths": security_reports,
         }
+
+        protected_files = [
+            report["path"]
+            for report in security_reports
+            if report.get("protected")
+        ]
+        if protected_files:
+            raise ValueError(
+                "Protected files cannot be modified by the AI workflow: "
+                + ", ".join(protected_files)
+            )
 
         plan["project_path"] = project_path
 
@@ -263,11 +297,29 @@ class WorkflowEngine:
         result = self.transaction.apply(project_path, changes)
         result["scope_guard"] = scope_result
 
-        if result.get("success"):
+        # RiskGate is evaluated AFTER the transaction because validation/tests
+        # happen inside TransactionManager. It must not require post-change tests
+        # before a change is written.
+        validation_result = result.get("validation") or {}
+        tests_result = validation_result.get("tests") or {}
+        validation_passed = bool(validation_result.get("valid"))
+        tests_passed = bool(tests_result.get("passed", validation_passed))
+        risk_level = plan.get("code_proposal", {}).get("risk", "medium")
+
+        final_gate = self.risk_gate.can_deploy(
+            risk=risk_level,
+            validation_passed=validation_passed,
+            tests_passed=tests_passed,
+            security_passed=True,
+            user_approved=True,
+        )
+        result["risk_gate"] = final_gate
+
+        if result.get("success") and final_gate.get("allowed"):
 
             plan["workflow"][
                 "stage"
-            ] = "validation_passed"
+            ] = "release_checks_passed"
 
             plan["workflow"][
                 "changes_applied"
