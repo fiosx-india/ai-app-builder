@@ -2,6 +2,7 @@ name: Build Android APK
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - main
@@ -14,10 +15,11 @@ permissions:
 
 jobs:
   build-apk:
-    name: Build Debug APK
+    name: Build Android Debug APK
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout Repository
         uses: actions/checkout@v4
 
@@ -27,34 +29,55 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Verify Android Project
         run: |
+          echo "Checking Android project..."
+
           if [ ! -d "android-app" ]; then
-            echo "ERROR: android-app folder does not exist."
-            echo "Create the Android project before building the APK."
+            echo "::error::android-app folder does not exist."
             exit 1
           fi
 
           if [ ! -f "android-app/gradlew" ]; then
-            echo "ERROR: android-app/gradlew not found."
+            echo "::error::Android Gradle Wrapper (gradlew) not found."
             exit 1
           fi
 
-      - name: Grant Execute Permission
+          if [ ! -f "android-app/settings.gradle.kts" ] && \
+             [ ! -f "android-app/settings.gradle" ]; then
+            echo "::error::Android settings.gradle file not found."
+            exit 1
+          fi
+
+          echo "Android project found successfully."
+
+      - name: Grant Gradle Permission
         working-directory: android-app
         run: chmod +x gradlew
 
       - name: Build Debug APK
         working-directory: android-app
-        run: ./gradlew assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace --no-daemon
 
-      - name: Upload APK
+      - name: Verify APK
+        run: |
+          APK_PATH="android-app/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK_PATH" ]; then
+            echo "::error::APK was not generated."
+            exit 1
+          fi
+
+          echo "APK successfully generated:"
+          ls -lh "$APK_PATH"
+
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: AI-App-Builder-Debug-APK
           path: android-app/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
           if-no-files-found: error
-          retention-days: 7
