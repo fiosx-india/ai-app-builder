@@ -1,27 +1,21 @@
-AI App Builder Beta Patch Bundle
+FINAL INTEGRATION FILES
 
-HOW TO APPLY
-1. Extract this ZIP at the AI App Builder project root.
-2. Allow overwrite for the listed files.
-3. Run:
-   cd backend
-   pip install -r requirements.txt
-   cd ..
-   pytest -q
+Replace only these files:
+1. backend/app/workflow_engine.py
 
-FILES INCLUDED
-- backend/app/patch_engine.py
-- backend/app/transaction_manager.py
-- backend/app/change_analyzer.py
-- backend/app/dependency_analyzer.py
-- backend/app/project_scanner.py
-- backend/app/code_generation_engine.py
-- backend/app/workflow_engine.py
-- tests/test_patch_engine.py
-- tests/test_transaction_manager.py
-- tests/test_project_scanner.py
+Add these tests:
+2. tests/test_dependency_impact_engine.py
+3. tests/test_risk_gate.py
 
-IMPORTANT
-This bundle is an overlay patch based on the inspected project source.
-It does not replace unrelated files.
-After applying, run the complete test suite before deployment.
+Purpose:
+- Actually execute DependencyImpactEngine during plan creation.
+- Include dependency impact reports in plan analysis.
+- Block protected paths such as .env and .git before approval.
+- Evaluate RiskGate after transaction validation/tests complete.
+- Keep WorkflowEngine as the only orchestration layer.
+- Do not create any new production module.
+
+After copying:
+pytest -q
+
+Then send the complete test output for final release-readiness review.
