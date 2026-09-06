@@ -19,7 +19,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout Repository
         uses: actions/checkout@v4
 
@@ -29,38 +28,51 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK Components
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
       - name: Verify Android Project
         run: |
           echo "Checking Android project..."
 
-          if [ ! -d "android-app" ]; then
-            echo "::error::android-app folder does not exist."
-            exit 1
-          fi
+          test -d android-app
+          test -f android-app/settings.gradle
+          test -f android-app/build.gradle
+          test -f android-app/app/build.gradle
+          test -f android-app/app/src/main/AndroidManifest.xml
 
-          if [ ! -f "android-app/gradlew" ]; then
-            echo "::error::Android Gradle Wrapper (gradlew) not found."
-            exit 1
-          fi
+          echo "Android project verified successfully."
 
-          if [ ! -f "android-app/settings.gradle.kts" ] && \
-             [ ! -f "android-app/settings.gradle" ]; then
-            echo "::error::Android settings.gradle file not found."
-            exit 1
-          fi
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
-          echo "Android project found successfully."
+      - name: Download Gradle
+        run: |
+          curl -fsSL \
+            https://services.gradle.org/distributions/gradle-8.7-bin.zip \
+            -o /tmp/gradle.zip
 
-      - name: Grant Gradle Permission
-        working-directory: android-app
-        run: chmod +x gradlew
+          unzip -q /tmp/gradle.zip -d /opt
+
+          echo "/opt/gradle-8.7/bin" >> $GITHUB_PATH
+
+      - name: Verify Gradle
+        run: gradle --version
 
       - name: Build Debug APK
         working-directory: android-app
-        run: ./gradlew assembleDebug --stacktrace --no-daemon
+        run: |
+          gradle :app:assembleDebug \
+            --no-daemon \
+            --stacktrace
 
       - name: Verify APK
         run: |
@@ -79,5 +91,5 @@ jobs:
         with:
           name: AI-App-Builder-Debug-APK
           path: android-app/app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 14
           if-no-files-found: error
+          retention-days: 14
