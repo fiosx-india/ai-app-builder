@@ -7,6 +7,10 @@ from .code_generation_engine import CodeGenerationEngine
 from .validation_pipeline import ValidationPipeline
 from .repair_engine import RepairEngine
 from .transaction_manager import TransactionManager
+from .change_analyzer import ChangeAnalyzer
+from .dependency_analyzer import DependencyAnalyzer
+from .dependency_impact_engine import DependencyImpactEngine
+from .change_scope_guard import ChangeScopeGuard
 
 
 class WorkflowEngine:
@@ -52,6 +56,9 @@ class WorkflowEngine:
         self.validation = ValidationPipeline()
         self.repair_engine = RepairEngine()
         self.transaction = TransactionManager()
+        self.change_analyzer = ChangeAnalyzer()
+        self.dependency_analyzer = DependencyAnalyzer()
+        self.dependency_impact_engine = DependencyImpactEngine()
 
         # IMPORTANT:
         # main.py and WorkflowEngine must share the same instance.
@@ -127,20 +134,46 @@ class WorkflowEngine:
             {},
         )
 
-        code_proposal = (
-            self.code_generator.propose(
-                command,
-                architecture,
-                inventory,
-            )
+        affected_files = plan.get("affected_files", [])
+        code_proposal = self.code_generator.propose(
+            command,
+            architecture,
+            inventory,
+            project_path=project_path,
+            affected_files=affected_files,
         )
 
         plan["code_proposal"] = code_proposal
 
-        plan["changes"] = code_proposal.get(
-            "changes",
-            [],
-        )
+        plan["changes"] = code_proposal.get("changes", [])
+
+        # Analysis is advisory before approval. It explains scope and
+        # dependency impact without applying any change.
+        change_reports = []
+        dependency_reports = []
+        for change in plan["changes"]:
+            file_name = change.get("file")
+            action = change.get("action", "modify")
+            if not file_name:
+                continue
+            if action == "modify":
+                change_reports.append(
+                    self.change_analyzer.analyze(
+                        file_name,
+                        change.get("old_content", ""),
+                        change.get("new_content", ""),
+                    )
+                )
+                dependency_reports.append(
+                    self.dependency_analyzer.analyze_file(
+                        str(__import__("pathlib").Path(project_path) / file_name)
+                    )
+                )
+
+        plan["analysis"] = {
+            "changes": change_reports,
+            "dependencies": dependency_reports,
+        }
 
         plan["project_path"] = project_path
 
@@ -209,12 +242,26 @@ class WorkflowEngine:
                 ),
             }
 
-        # TransactionManager handles the protected
-        # backup → patch → validation → rollback flow.
-        result = self.transaction.apply(
-            project_path,
-            changes,
-        )
+        # Enforce approved scope immediately before any write.
+        approved_files = [change.get("file") for change in changes if change.get("file")]
+        scope_guard = ChangeScopeGuard(project_path)
+        scope_result = scope_guard.inspect_plan(changes, approved_files)
+
+        if not scope_result.get("allowed"):
+            return {
+                "approval_id": approval_id,
+                "plan": plan,
+                "transaction": {
+                    "success": False,
+                    "rolled_back": False,
+                    "stage": "scope_guard_failed",
+                    "scope_guard": scope_result,
+                },
+            }
+
+        # TransactionManager handles backup → patch → validation → rollback.
+        result = self.transaction.apply(project_path, changes)
+        result["scope_guard"] = scope_result
 
         if result.get("success"):
 
