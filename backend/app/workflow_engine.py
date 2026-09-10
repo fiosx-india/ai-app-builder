@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Any, Dict, Optional
+import time
 
 from .ai_engine import AIEngine
 from .approval_engine import ApprovalEngine
@@ -55,77 +56,126 @@ class WorkflowEngine:
         return self.approval_engine.get_request(approval_id)
 
     def create_plan(
-        self,
-        command: str,
-        project_path: str,
-    ) -> Dict[str, Any]:
-        if not command.strip():
-            raise ValueError("Command cannot be empty.")
+            self,
+            command: str,
+            project_path: str,
+        ) -> Dict[str, Any]:
+            if not command.strip():
+                raise ValueError("Command cannot be empty.")
 
-        inventory = self.scanner.scan(project_path)
-        plan = self.ai_engine.create_plan(command, project_path)
-        plan["inventory"] = inventory
+            total_start = time.perf_counter()
+            print("[TRACE] CREATE PLAN START")
 
-        architecture = plan.get("architecture", {})
-        affected_files = plan.get("affected_files", [])
-
-        try:
-            code_proposal = self.code_generator.propose(
-                command,
-                architecture,
-                inventory,
-                project_path=project_path,
-                affected_files=affected_files,
-            )
-        except TypeError:
-            # Backward compatibility with the existing generator signature.
-            code_proposal = self.code_generator.propose(
-                command,
-                architecture,
-                inventory,
+            start = time.perf_counter()
+            inventory = self.scanner.scan(project_path)
+            print(
+                f"[TRACE] SCANNER DONE: "
+                f"{time.perf_counter() - start:.3f}s"
             )
 
-        plan["code_proposal"] = code_proposal
-        plan["changes"] = code_proposal.get("changes", [])
-        plan["project_path"] = project_path
+            start = time.perf_counter()
+            plan = self.ai_engine.create_plan(command, project_path)
+            print(
+                f"[TRACE] AI PLAN DONE: "
+                f"{time.perf_counter() - start:.3f}s"
+            )
 
-        security = self.security_manager.inspect_paths(
-            change.get("file", "")
-            for change in plan["changes"]
-        )
+            plan["inventory"] = inventory
 
-        dependency_impacts = []
-        for change in plan["changes"]:
-            file_name = change.get("file", "")
-            action = change.get("action", "modify")
-            if file_name and action == "modify":
-                dependency_impacts.append(
-                    self.dependency_impact_engine.analyze(
-                        project_path,
-                        file_name,
-                    )
+            architecture = plan.get("architecture", {})
+            affected_files = plan.get("affected_files", [])
+
+            start = time.perf_counter()
+            try:
+                code_proposal = self.code_generator.propose(
+                    command,
+                    architecture,
+                    inventory,
+                    project_path=project_path,
+                    affected_files=affected_files,
+                )
+            except TypeError:
+                code_proposal = self.code_generator.propose(
+                    command,
+                    architecture,
+                    inventory,
                 )
 
-        plan["analysis"] = {
-            "security": security,
-            "dependency_impacts": dependency_impacts,
-        }
+            print(
+                f"[TRACE] CODE PROPOSAL DONE: "
+                f"{time.perf_counter() - start:.3f}s"
+            )
 
-        plan["workflow"] = {
-            "stage": "approval_required",
-            "changes_applied": False,
-            "validation_passed": False,
-            "repair_attempts": 0,
-            "deployment_allowed": False,
-        }
+            plan["code_proposal"] = code_proposal
+            plan["changes"] = code_proposal.get("changes", [])
+            plan["project_path"] = project_path
 
-        approval = self.approval_engine.create_request(plan)
+            start = time.perf_counter()
+            security = self.security_manager.inspect_paths(
+                change.get("file", "")
+                for change in plan["changes"]
+            )
+            print(
+                f"[TRACE] SECURITY DONE: "
+                f"{time.perf_counter() - start:.3f}s"
+            )
 
-        return {
-            "status": "approval_required",
-            "approval_id": approval["id"],
-            "plan": plan,
-        }
+            dependency_impacts = []
+
+            start = time.perf_counter()
+
+            for change in plan["changes"]:
+                file_name = change.get("file", "")
+                action = change.get("action", "modify")
+
+                if file_name and action == "modify":
+                    dependency_impacts.append(
+                        self.dependency_impact_engine.analyze(
+                            project_path,
+                            file_name,
+                        )
+                    )
+
+            print(
+                f"[TRACE] DEPENDENCY ANALYSIS DONE: "
+                f"{time.perf_counter() - start:.3f}s"
+            )
+
+            plan["analysis"] = {
+                "security": security,
+                "dependency_impacts": dependency_impacts,
+            }
+
+            plan["workflow"] = {
+                "stage": "approval_required",
+                "changes_applied": False,
+                "validation_passed": False,
+                "repair_attempts": 0,
+                "deployment_allowed": False,
+            }
+
+            start = time.perf_counter()
+
+            approval = self.approval_engine.create_request(plan)
+
+            approval_time = time.perf_counter() - start
+
+            print(
+                f"[TRACE] APPROVAL ID CREATED: "
+                f"{approval['id']} "
+                f"({approval_time:.3f}s)"
+            )
+
+            print(
+                f"[TRACE] CREATE PLAN TOTAL: "
+                f"{time.perf_counter() - total_start:.3f}s"
+            )
+
+            return {
+                "status": "approval_required",
+                "approval_id": approval["id"],
+                "plan": plan,
+            }
 
     def apply_approved_plan(self, approval_id: str) -> Dict[str, Any]:
         approval = self.approval_engine.get_request(approval_id)
