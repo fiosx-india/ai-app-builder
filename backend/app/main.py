@@ -215,7 +215,7 @@ def apply_approved_changes(
 
 @app.post("/api/validate")
 def validate_project(
-    request: CommandRequest,
+    request: ProjectRequest,
 ):
 
     try:
@@ -238,7 +238,7 @@ def validate_project(
 
 @app.post("/api/project")
 def create_project(
-    request: CommandRequest,
+    request: ProjectRequest,
 ):
 
     try:
