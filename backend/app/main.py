@@ -48,6 +48,13 @@ class CommandRequest(BaseModel):
     )
 
 
+class ProjectRequest(BaseModel):
+
+    project_path: str = (
+        "./projects/default"
+    )
+
+
 class ApprovalRequest(BaseModel):
 
     approval_id: str
@@ -56,7 +63,6 @@ class ApprovalRequest(BaseModel):
 class ApplyRequest(BaseModel):
 
     approval_id: str
-
 
 # --------------------------------------------------
 # ROOT
